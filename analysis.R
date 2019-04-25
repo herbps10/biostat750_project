@@ -5,10 +5,16 @@ dat <- read_csv("data/data.csv") %>%
   select(-id, -X33) %>%
   mutate(diagnosis = as.numeric(diagnosis == "M"))
 
+dat <- dat[1:(nrow(dat) / 2), ]
+test <- dat[(nrow(dat) / 2 + 1):nrow(dat), ]
+
 summary(prcomp(select(dat, -diagnosis)))
 
 X = as.matrix(select(dat, -diagnosis))
 y = pull(dat, diagnosis)
+
+X_test <- as.matrix(select(test, -diagnosis))
+y_test <- pull(test, diagnosis)
 
 ##### Evaluate LASSO
 fit_lasso <- function(x, y) {
@@ -95,3 +101,8 @@ bart_folds <- expand.grid(
          fit = pmap(list(x_train, y_train), fit_bart),
          
          auc = pmap_dbl(list(fit, x_test, y_test), test_performance_bart))
+
+mean(bart_folds$auc)
+
+bart <- fit_bart(X, y)
+test_performance_bart(bart, X_test, y_test)
