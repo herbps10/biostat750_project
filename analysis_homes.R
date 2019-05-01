@@ -17,7 +17,7 @@ X$LogLotArea <- log(X$LotArea)
 X$YrBltAndRemod <- X$YearBuilt + X$YearRemodAdd
 
 X <- model.matrix(~-1 + ., X)
-X <- scale(X)
+X_scaled <- scale(X)
 y <- read_csv("data/train_y.csv") %>% pull(x)
 
 ##### Evaluate LASSO, Ridge, ElasticNet
@@ -39,9 +39,9 @@ lasso_folds <- expand.grid(
   as_tibble() %>%
   mutate(indices = map(fold, function(i) indices[[i]])) %>%
   mutate(y_train = map(indices, function(i) y[-i]),
-         x_train = map(indices, function(i) X[-i, ]),
+         x_train = map(indices, function(i) X_scaled[-i, ]),
          y_test  = map(indices, function(i) y[i]),
-         x_test  = map(indices, function(i) X[i, ]),
+         x_test  = map(indices, function(i) X_scaled[i, ]),
          
          fit = pmap(list(x_train, y_train, alpha), fit_lasso),
          
@@ -51,7 +51,7 @@ lasso_folds %>%
   group_by(alpha) %>%
   summarize(performance = mean(performance))
 
-lasso_overall_fit <- fit_lasso(X, y, 1)
+lasso_overall_fit <- fit_lasso(X_scaled, y, 1)
 lasso_varimp <- caret::varImp(lasso_overall_fit$glmnet.fit, lambda = lasso_overall_fit$lambda.min)
 tibble(
   name = rownames(lasso_varimp),
@@ -88,3 +88,57 @@ bart_folds <- expand.grid(
          performance  = pmap_dbl(list(fit, x_test, y_test), test_performance_bart))
 
 mean(bart_folds$performance)
+
+
+bart_overall_fit <- fit_bart(X, y)
+
+bart_varimp <- bartMachine::investigate_var_importance(bart_overall_fit)
+
+
+
+##### Evaluate BART
+fit_xgb <- function(x, y, eta, max_depth) {
+  xgboost::xgboost(
+    data = x,
+    label = y,
+    nrounds = 1000,
+    nfold = 5,
+    objective = "reg:linear",
+    verbose = 0,
+    early_stopping_rounds = 50,
+    params = list(
+      eta = eta,
+      max_depth = max_depth
+    )
+  )
+}
+
+test_performance_xgb <- function(fit, x, y) {
+  p = predict(fit, newdata = x)
+  Metrics::rmsle(p, y)
+}
+
+k <- 5
+indices <- caret::createFolds(y, k = k)
+xgboost_folds <- expand.grid(
+  fold = 1:k,
+  eta = c(.01, .05, .1, .3),
+  max_depth = c(1, 3, 5, 7)
+) %>%
+  as_tibble() %>%
+  mutate(indices = map(fold, function(i) indices[[i]])) %>%
+  mutate(y_train = map(indices, function(i) y[-i]),
+         x_train = map(indices, function(i) X[-i, ]),
+         y_test  = map(indices, function(i) y[i]),
+         x_test  = map(indices, function(i) X[i, ]),
+         
+         fit = pmap(list(x_train, y_train, eta, max_depth), fit_xgb),
+         
+         performance  = pmap_dbl(list(fit, x_test, y_test), test_performance_xgb))
+
+xgboost_folds %>%
+  group_by(eta, max_depth) %>%
+  summarize(performance = mean(performance))
+
+xgb_overall_fit <- fit_xgb(X, y)
+test_performance_xgb(xgb_overall_fit, X, y)
