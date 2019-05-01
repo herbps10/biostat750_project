@@ -20,8 +20,36 @@ X <- model.matrix(~-1 + ., X)
 X_scaled <- scale(X)
 y <- read_csv("data/train_y.csv") %>% pull(x)
 
+##### Evaluate mean imputation
+fit_mean <- function(x, y) {
+  list(mean = mean(y))
+}
+
+test_performance_mean <- function(fit, x, y) {
+  Metrics::rmsle(fit$mean, y)
+}
+
+k <- 10
+indices <- caret::createFolds(y, k = k)
+mean_folds <- expand.grid(
+  fold = 1:k
+) %>%
+  as_tibble() %>%
+  mutate(indices = map(fold, function(i) indices[[i]])) %>%
+  mutate(y_train = map(indices, function(i) y[-i]),
+         x_train = map(indices, function(i) X_scaled[-i, ]),
+         y_test  = map(indices, function(i) y[i]),
+         x_test  = map(indices, function(i) X_scaled[i, ]),
+         
+         fit = pmap(list(x_train, y_train), fit_mean),
+         
+         performance = pmap_dbl(list(fit, x_test, y_test), test_performance_mean))
+
+mean(mean_folds$performance)
+
 ##### Evaluate LASSO, Ridge, ElasticNet
 fit_lasso <- function(x, y, alpha) {
+  print(paste("alpha = ", alpha))
   glmnet::cv.glmnet(x, y, nfolds = 5, alpha = alpha)
 }
 
@@ -89,15 +117,13 @@ bart_folds <- expand.grid(
 
 mean(bart_folds$performance)
 
-
 bart_overall_fit <- fit_bart(X, y)
 
 bart_varimp <- bartMachine::investigate_var_importance(bart_overall_fit)
 
-
-
 ##### Evaluate BART
 fit_xgb <- function(x, y, eta, max_depth) {
+  print(paste("eta =", eta, "max_depth=", max_depth))
   xgboost::xgboost(
     data = x,
     label = y,
@@ -118,7 +144,7 @@ test_performance_xgb <- function(fit, x, y) {
   Metrics::rmsle(p, y)
 }
 
-k <- 5
+k <- 10
 indices <- caret::createFolds(y, k = k)
 xgboost_folds <- expand.grid(
   fold = 1:k,

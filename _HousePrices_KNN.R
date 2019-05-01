@@ -8,7 +8,7 @@ library(caret)
 library(neuralnet)
 library(Metrics)
 
-dat <- as_tibble(read.csv("train.csv", header = T))
+dat <- as_tibble(read.csv("data/train.csv", header = T))
 #get rid of cols with lots of missing values
 dat <- select(dat, -Id, -LotFrontage, -Alley, -FireplaceQu, -PoolQC, -Fence, -MiscFeature)
 dat <- dat[complete.cases(dat),]
