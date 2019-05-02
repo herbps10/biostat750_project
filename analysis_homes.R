@@ -1,24 +1,11 @@
 library(tidyverse)
 
-X <- read_csv("data/train_x.csv") %>% select(-X1, -`(Intercept)`) %>%
-  select(-Exterior1stAsphShn, -ExterCondPo, -FoundationSlab, -HeatingWall)
+data <- read_csv("data/train.csv", guess_max = 10000) %>%
+  bind_rows(read_csv("data/test.csv", guess_max = 10000)) %>%
+  process_data()
 
-# Feature engineering
-X$TotalSF <- X$TotalBsmtSF + X$X1stFlrSF + X$X2ndFlrSF
-X$Total_Bathrooms = X$FullBath + (0.5 * X$HalfBath) +
-                              X$BsmtFullBath + (0.5 * X$BsmtHalfBath)
-X$haspool <- ifelse(X$PoolArea > 0, 1, 0)
-X$has2ndfloor <- ifelse(X$X2ndFlrSF > 0, 1, 0)
-#X$hasgarage <- ifelse(X$GarageArea > 0, 1, 0)
-X$hasfireplace <- ifelse(X$Fireplaces > 0, 1, 0)
-X$OverallQualCat <- as.factor(X$OverallQual)
-X$OverallCondCat <- as.factor(X$OverallCond)
-X$LogLotArea <- log(X$LotArea)
-X$YrBltAndRemod <- X$YearBuilt + X$YearRemodAdd
-
-X <- model.matrix(~-1 + ., X)
-X_scaled <- scale(X)
-y <- read_csv("data/train_y.csv") %>% pull(x)
+X_scaled <- data$X_train
+y <- data$y_train
 
 ##### Evaluate mean imputation
 fit_mean <- function(x, y) {
@@ -55,6 +42,7 @@ fit_lasso <- function(x, y, alpha) {
 
 test_performance_lasso <- function(fit, x, y) {
   p = predict(fit, newx = x)[,1]
+  p[p < 0] <- 0
   Metrics::rmsle(p, y)
 }
 
@@ -79,7 +67,7 @@ lasso_folds %>%
   group_by(alpha) %>%
   summarize(performance = mean(performance))
 
-lasso_overall_fit <- fit_lasso(X_scaled, y, 1)
+lasso_overall_fit <- fit_lasso(X_scaled, y, 0)
 lasso_varimp <- caret::varImp(lasso_overall_fit$glmnet.fit, lambda = lasso_overall_fit$lambda.min)
 tibble(
   name = rownames(lasso_varimp),
@@ -88,10 +76,12 @@ tibble(
   arrange(-value)
 
 ##### Evaluate BART
-fit_bart <- function(x, y) {
+fit_bart <- function(x, y, trees = 50, k = 2) {
+  print(paste("trees =", trees))
   bartMachine::bartMachine(X = as.data.frame(x),
                            y = y, mem_cache_for_speed = FALSE,
-                           num_trees = 50)
+                           num_trees = trees,
+                           k = k)
 }
 
 test_performance_bart <- function(fit, x, y) {
@@ -99,19 +89,21 @@ test_performance_bart <- function(fit, x, y) {
   Metrics::rmsle(p, y)
 }
 
-k <- 5
+k <- 10
 indices <- caret::createFolds(y, k = k)
 bart_folds <- expand.grid(
-  fold = 1:k
+  fold = 1:k,
+  trees = c(50, 100, 200),
+  k = c(2, 3, 5)
 ) %>%
   as_tibble() %>%
   mutate(indices = map(fold, function(i) indices[[i]])) %>%
   mutate(y_train = map(indices, function(i) y[-i]),
-         x_train = map(indices, function(i) X[-i, ]),
+         x_train = map(indices, function(i) X_scaled[-i, ]),
          y_test  = map(indices, function(i) y[i]),
-         x_test  = map(indices, function(i) X[i, ]),
+         x_test  = map(indices, function(i) X_scaled[i, ]),
          
-         fit = pmap(list(x_train, y_train), fit_bart),
+         fit = pmap(list(x_train, y_train, trees, k), fit_bart),
          
          performance  = pmap_dbl(list(fit, x_test, y_test), test_performance_bart))
 
@@ -148,15 +140,17 @@ k <- 10
 indices <- caret::createFolds(y, k = k)
 xgboost_folds <- expand.grid(
   fold = 1:k,
-  eta = c(.01, .05, .1, .3),
-  max_depth = c(1, 3, 5, 7)
+  eta = 0.01,
+  max_depth = 3
+  #eta = c(.01, .05, .1, .3),
+  #max_depth = c(1, 3, 5, 7)
 ) %>%
   as_tibble() %>%
   mutate(indices = map(fold, function(i) indices[[i]])) %>%
   mutate(y_train = map(indices, function(i) y[-i]),
-         x_train = map(indices, function(i) X[-i, ]),
+         x_train = map(indices, function(i) X_scaled[-i, ]),
          y_test  = map(indices, function(i) y[i]),
-         x_test  = map(indices, function(i) X[i, ]),
+         x_test  = map(indices, function(i) X_scaled[i, ]),
          
          fit = pmap(list(x_train, y_train, eta, max_depth), fit_xgb),
          
@@ -166,5 +160,7 @@ xgboost_folds %>%
   group_by(eta, max_depth) %>%
   summarize(performance = mean(performance))
 
-xgb_overall_fit <- fit_xgb(X, y)
-test_performance_xgb(xgb_overall_fit, X, y)
+xgb_overall_fit <- fit_xgb(X_scaled, y, eta = 0.01, max_depth = 3)
+test_performance_xgb(xgb_overall_fit, X_scaled, y)
+
+xgboost::xgb.importance(model = xgb_overall_fit)

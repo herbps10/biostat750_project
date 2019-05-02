@@ -1,7 +1,9 @@
 library(tidyverse)
 
-process_data <- function(data, factor_levels) {
+process_data <- function(data) {
   ids <- data$Id
+  
+  train <- !is.na(data$SalePrice)
   
   data <- data %>%
     select(-Id, -LotFrontage, -Alley, -FireplaceQu, -PoolQC, -Fence, -MiscFeature, -Utilities) %>%
@@ -25,40 +27,26 @@ process_data <- function(data, factor_levels) {
       YrBltAndRemod = YearBuilt + YearRemodAdd
     )
   
-  X_df <- data
-  if("SalePrice" %in% names(X_df)) {
-    X_df <- X_df %>% select(-SalePrice)
-  }
-  
-  X_df <- X_df %>%
+  X_df <- data %>% 
+    select(-SalePrice) %>%
     mutate_if(is.numeric, scale)
   
-  contrasts <- list()
-  for(col in names(factor_levels)) {
-    if(col %in% names(X_df)) {
-      contrasts[[col]] <- contrasts(factor(factor_levels[[col]]), contrasts = FALSE)
-    }
-  }
-  
   X <- model.matrix(~ -1 + ., X_df, contrasts.arg = contrasts)
+  y <- pull(data, SalePrice)
   
-  if("SalePrice" %in% names(data)) {
-    y <- pull(data, SalePrice)
-  }
+  X_train <- X[train,]
+  y_train <- y[train]
+  X_test <- X[!train,]
   
-  list(ids = ids, X = X, y = y)
+  list(ids = ids, X_train = X_train, y_train = y_train, X_test = X_test, test_ids = ids[!train])
 }
 
-factor_levels <- read_csv("data/train.csv") %>%
-  bind_rows(read_csv("data/test.csv")) %>%
-  select_if(is.character) %>%
-  apply(2, unique)
+data <- read_csv("data/train.csv", guess_max = 10000) %>%
+  bind_rows(read_csv("data/test.csv", guess_max = 10000)) %>%
+  process_data()
 
-train <- read_csv("data/train.csv", guess_max = 10000) %>%
-  process_data(factor_levels)
-
-X_scaled <- train$X
-y <- train$y
+X_scaled <- data$X_train
+y <- data$y_train
 
 fit_lasso <- function(x, y, alpha) {
   glmnet::cv.glmnet(x, y, nfolds = 5, alpha = alpha)
@@ -123,7 +111,7 @@ cross_validated_error <- function(weights, folds) {
   mean(res$performance)
 }
 
-k <- 5
+k <- 10
 indices <- caret::createFolds(y, k = k)
 weights <- rep(1/4, 4)
 ensemble_folds <- expand.grid(
@@ -155,12 +143,10 @@ overall_fit <- fit_ensemble(X_scaled, y)
 
 ##### Predict test set
 
-test <- read_csv("data/test.csv") %>%
-  process_data(factor_levels)
-
-prediction <- predict_ensemble(weights, overall_fit, test$X)
+prediction <- predict_ensemble(weights, overall_fit, data$X_test)
 
 tibble(
-  Id = test$ids,
+  Id = data$test_ids,
   SalePrice = prediction
-)
+) %>%
+  write_csv("test_predictions.csv")
